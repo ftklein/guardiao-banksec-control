@@ -1,0 +1,17 @@
+{
+  "name": "guardiao-banksec-control",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent trust control plane for Guardiao BankSec",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "validate": "node src/validate-target.mjs targets/guardiao.json",
+    "verify": "node src/verify-trust.mjs targets/guardiao.json",
+    "safety": "node src/public-safety-check.mjs"
+  }
+}

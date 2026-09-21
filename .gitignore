@@ -1,0 +1,12 @@
+# Nothing generated belongs in this repository.
+node_modules/
+npm-debug.log*
+.DS_Store
+
+# Defence in depth: these must never exist here in the first place.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx

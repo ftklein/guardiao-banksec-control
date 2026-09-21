@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "target": {
+    "owner": "ftklein",
+    "repository": "GuardiaoSystem"
+  },
+  "statusContext": "banksec/trusted-gate",
+  "trust": {
+    "state": "BOOTSTRAP_PENDING",
+    "approvedCommit": null,
+    "trustedFiles": []
+  }
+}

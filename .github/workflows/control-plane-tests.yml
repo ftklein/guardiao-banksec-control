@@ -1,0 +1,49 @@
+name: Control Plane CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  control-plane-tests:
+    name: control-plane-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Report Node version
+        run: node --version
+
+      - name: Unit tests
+        run: node --test
+
+      - name: Validate target manifest
+        run: node src/validate-target.mjs targets/guardiao.json
+
+      - name: Trust gate must report BOOTSTRAP_PENDING (exit 2, never a pass)
+        run: |
+          set +e
+          output="$(node src/verify-trust.mjs targets/guardiao.json 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$code" -ne 2 ]; then
+            echo "::error::expected exit 2 (BOOTSTRAP_PENDING), got $code"
+            exit 1
+          fi
+          case "$output" in
+            *"TRUST RESULT: NOT TRUSTED"*) ;;
+            *) echo "::error::trust gate did not report NOT TRUSTED"; exit 1 ;;
+          esac
+          echo "Bootstrap gate held: exit 2 is the expected state and is NOT a trust pass."
+
+      - name: Public safety check
+        run: node src/public-safety-check.mjs
