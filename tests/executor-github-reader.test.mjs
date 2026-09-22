@@ -392,3 +392,125 @@ test('C26: no payload behind an invalid status is ever decoded', async () => {
     assert.equal(state.contentRead, false, `content was read for status ${String(status)}`);
   }
 });
+
+// -------------------------------------------------------------------------
+// Codex corrective-03 (PR #1): explicit evidence that no redirect occurred.
+// `redirect: 'error'` is only an instruction to the adapter; since the
+// transport is injectable and need not be a native fetch, the reader requires
+// `redirected === false` in the response as positive evidence.
+// -------------------------------------------------------------------------
+
+// Values that are NOT the boolean false. Deliberately mixes falsy and truthy
+// so a future `if (!response.redirected)` regression is caught: that form
+// would wrongly accept 0, '', null and undefined.
+const NON_EVIDENCE_REDIRECT_VALUES = [
+  ['absent', undefined],
+  ['undefined', undefined],
+  [' null', null],
+  ["string 'false'", 'false'],
+  ["string 'true'", 'true'],
+  ['empty string', ''],
+  ['number 0', 0],
+  ['number 1', 1],
+  ['NaN', Number.NaN],
+  ['empty object', {}],
+  ['empty array', []],
+  ['Boolean object', new Boolean(false)]
+];
+
+function redirectEvidenceResponse(value, { omit = false, status = 200 } = {}) {
+  const state = { contentRead: false };
+  const body = {
+    type: 'file',
+    encoding: 'base64',
+    get content() {
+      state.contentRead = true;
+      return syntheticBytes(TRUSTED_PATHS[0]).toString('base64');
+    }
+  };
+  const response = omit ? { status, body } : { status, redirected: value, body };
+  return { response, state };
+}
+
+async function rejectsRedirectEvidence(value, options) {
+  const { response, state } = redirectEvidenceResponse(value, options);
+  const read = reader(async () => response);
+  await rejects(read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }), READER_ERROR_CODES.REDIRECT_EVIDENCE_MISSING);
+  assert.equal(state.contentRead, false);
+}
+
+test('C27: a response without the redirected flag is refused', async () => {
+  await rejectsRedirectEvidence(undefined, { omit: true });
+});
+
+test('C28: redirected undefined is refused', async () => {
+  await rejectsRedirectEvidence(undefined);
+});
+
+test('C29: redirected null is refused', async () => {
+  await rejectsRedirectEvidence(null);
+});
+
+test("C30: the string 'false' is not the boolean false", async () => {
+  await rejectsRedirectEvidence('false');
+});
+
+test('C31: redirected 0 is refused', async () => {
+  await rejectsRedirectEvidence(0);
+});
+
+test('C32: redirected 1 is refused', async () => {
+  await rejectsRedirectEvidence(1);
+});
+
+test('C33: redirected true is a REDIRECT, distinct from missing evidence', async () => {
+  const { response, state } = redirectEvidenceResponse(true);
+  const read = reader(async () => response);
+  await rejects(read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }), READER_ERROR_CODES.REDIRECT);
+  assert.equal(state.contentRead, false);
+  assert.notEqual(READER_ERROR_CODES.REDIRECT, READER_ERROR_CODES.REDIRECT_EVIDENCE_MISSING);
+});
+
+test('C34: redirected false with a 3xx status is still a REDIRECT', async () => {
+  for (const status of [300, 302, 307, 308, 399]) {
+    const { response, state } = redirectEvidenceResponse(false, { status });
+    const read = reader(async () => response);
+    await rejects(read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }), READER_ERROR_CODES.REDIRECT);
+    assert.equal(state.contentRead, false);
+  }
+});
+
+test('C35: redirected false with an integer 2xx status still succeeds', async () => {
+  const bytes = syntheticBytes(TRUSTED_PATHS[0]);
+  for (const status of [200, 201, 299]) {
+    const read = reader(async () => ({
+      status,
+      redirected: false,
+      body: { type: 'file', encoding: 'base64', size: bytes.byteLength, content: bytes.toString('base64') }
+    }));
+    const result = await read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT });
+    assert.equal(result.present, true);
+    assert.equal(result.bytes.toString('utf8'), bytes.toString('utf8'));
+  }
+});
+
+test('C36: only the boolean false is accepted, and no payload is ever read', async () => {
+  for (const [label, value] of NON_EVIDENCE_REDIRECT_VALUES) {
+    const omit = label === 'absent';
+    const { response, state } = redirectEvidenceResponse(value, { omit });
+    const read = reader(async () => response);
+    await assert.rejects(read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }), (error) => {
+      assert.ok(error instanceof ReaderError, `${label}: expected a ReaderError`);
+      assert.equal(error.code, READER_ERROR_CODES.REDIRECT_EVIDENCE_MISSING, `${label} must not be accepted`);
+      return true;
+    });
+    assert.equal(state.contentRead, false, `${label}: the payload must never be read`);
+  }
+
+  // And the one accepted value is the boolean false, nothing else.
+  const accepted = NON_EVIDENCE_REDIRECT_VALUES.filter(([, value]) => value === false);
+  assert.deepEqual(accepted, []);
+  const { response } = redirectEvidenceResponse(false);
+  const result = await reader(async () => response)({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT });
+  assert.equal(result.present, true);
+});

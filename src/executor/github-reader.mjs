@@ -20,6 +20,7 @@ export const READER_ERROR_CODES = Object.freeze({
   BAD_PATH: 'BAD_PATH',
   BAD_REF: 'BAD_REF',
   REDIRECT: 'REDIRECT',
+  REDIRECT_EVIDENCE_MISSING: 'REDIRECT_EVIDENCE_MISSING',
   TRANSPORT: 'TRANSPORT',
   HTTP_STATUS: 'HTTP_STATUS',
   INVALID_STATUS: 'INVALID_STATUS',
@@ -127,6 +128,10 @@ export function createGithubContentReader({ transport, approvedCommit, baseUrl =
       response = await transport({
         url,
         method: 'GET',
+        // An instruction to the adapter, never a guarantee: `transport` is
+        // injectable and is not necessarily a native fetch, so the reader also
+        // requires explicit evidence in the response that no redirect was
+        // followed (see the redirect guard below).
         redirect: 'error',
         headers: {
           accept: 'application/vnd.github+json',
@@ -140,10 +145,25 @@ export function createGithubContentReader({ transport, approvedCommit, baseUrl =
     if (!response || typeof response !== 'object') {
       throw new ReaderError(READER_ERROR_CODES.UNEXPECTED_PAYLOAD, 'transport returned no response');
     }
+    // Redirect evidence is settled before the status, the body, the encoding
+    // and the digest, so a transport that cannot prove it followed no redirect
+    // never has its payload observed at all.
     if (response.redirected === true) {
+      // Positive evidence that a redirect happened.
       throw new ReaderError(READER_ERROR_CODES.REDIRECT, 'redirects are not allowed');
     }
-    // The status must be an integer before any range comparison: NaN makes
+    if (response.redirected !== false) {
+      // No positive evidence that a redirect did NOT happen. An absent or
+      // malformed flag is not proof of anything, so it fails closed — and it is
+      // reported apart from REDIRECT, because "the transport proved nothing" is
+      // a different fact from "the transport followed a redirect".
+      throw new ReaderError(
+        READER_ERROR_CODES.REDIRECT_EVIDENCE_MISSING,
+        'transport did not provide explicit evidence that no redirect was followed'
+      );
+    }
+    // Defence in depth: even with the flag set to false, a 3xx status is a
+    // redirect. The status must be an integer before any range comparison: NaN makes
     // every comparison false, so a range check alone would let a malformed
     // status through instead of failing closed.
     if (!Number.isInteger(response.status)) {
