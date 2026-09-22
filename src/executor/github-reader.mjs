@@ -22,6 +22,7 @@ export const READER_ERROR_CODES = Object.freeze({
   REDIRECT: 'REDIRECT',
   TRANSPORT: 'TRANSPORT',
   HTTP_STATUS: 'HTTP_STATUS',
+  INVALID_STATUS: 'INVALID_STATUS',
   UNEXPECTED_PAYLOAD: 'UNEXPECTED_PAYLOAD',
   BAD_ENCODING: 'BAD_ENCODING',
   BAD_BASE64: 'BAD_BASE64',
@@ -34,6 +35,16 @@ export class ReaderError extends Error {
     this.name = 'ReaderError';
     this.code = code;
   }
+}
+
+// A promise may be rejected with any value, not only an Error. Only a real
+// Error's own message is quoted; any other rejection is described by its type
+// alone, so nothing raw from the transport reaches a public result.
+function transportFailureDetail(error) {
+  if (error instanceof Error && typeof error.message === 'string' && error.message.length > 0) {
+    return error.message;
+  }
+  return `non-Error rejection of type ${error === null ? 'null' : typeof error}`;
 }
 
 export function assertApiOrigin(baseUrl) {
@@ -123,17 +134,26 @@ export function createGithubContentReader({ transport, approvedCommit, baseUrl =
         }
       });
     } catch (error) {
-      throw new ReaderError(READER_ERROR_CODES.TRANSPORT, `transport failed: ${error.message}`);
+      throw new ReaderError(READER_ERROR_CODES.TRANSPORT, `transport failed: ${transportFailureDetail(error)}`);
     }
 
     if (!response || typeof response !== 'object') {
       throw new ReaderError(READER_ERROR_CODES.UNEXPECTED_PAYLOAD, 'transport returned no response');
     }
-    if (response.redirected === true || (response.status >= 300 && response.status < 400)) {
+    if (response.redirected === true) {
       throw new ReaderError(READER_ERROR_CODES.REDIRECT, 'redirects are not allowed');
     }
-    if (typeof response.status !== 'number' || response.status < 200 || response.status >= 300) {
-      throw new ReaderError(READER_ERROR_CODES.HTTP_STATUS, `unexpected HTTP status ${String(response.status)}`);
+    // The status must be an integer before any range comparison: NaN makes
+    // every comparison false, so a range check alone would let a malformed
+    // status through instead of failing closed.
+    if (!Number.isInteger(response.status)) {
+      throw new ReaderError(READER_ERROR_CODES.INVALID_STATUS, 'response status is not an integer HTTP status');
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new ReaderError(READER_ERROR_CODES.REDIRECT, 'redirects are not allowed');
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new ReaderError(READER_ERROR_CODES.HTTP_STATUS, `unexpected HTTP status ${response.status}`);
     }
 
     const body = response.body;

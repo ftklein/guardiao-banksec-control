@@ -11,7 +11,8 @@ import {
   API_ORIGIN
 } from '../src/executor/github-reader.mjs';
 import { TRUSTED_PATHS } from '../src/executor/constants.mjs';
-import { SYNTHETIC_COMMIT, syntheticBytes } from './executor-fixtures.mjs';
+import { verifyTrust, TRUST_STATES } from '../src/executor/trust-verifier.mjs';
+import { SYNTHETIC_COMMIT, syntheticBytes, activeManifest } from './executor-fixtures.mjs';
 
 const OTHER_COMMIT = '89abcdef0123456789abcdef0123456789abcdef';
 
@@ -213,4 +214,181 @@ test('the request URL cannot be steered by the target', () => {
     url,
     `https://api.github.com/repos/ftklein/GuardiaoSystem/contents/${TRUSTED_PATHS[3]}?ref=${SYNTHETIC_COMMIT}`
   );
+});
+
+// -------------------------------------------------------------------------
+// Codex corrective-02 (PR #1): the status gate and the transport catch.
+// -------------------------------------------------------------------------
+
+// A body whose `content` records the moment it is read, so a test can prove
+// that an invalid status is rejected before any decoding is attempted.
+function watchedBody(bytes) {
+  const state = { contentRead: false };
+  const body = {
+    type: 'file',
+    encoding: 'base64',
+    size: bytes.byteLength,
+    get content() {
+      state.contentRead = true;
+      return bytes.toString('base64');
+    }
+  };
+  return { body, state };
+}
+
+const statusResponse = (status, bytes = syntheticBytes(TRUSTED_PATHS[0])) => {
+  const { body, state } = watchedBody(bytes);
+  return { response: { status, redirected: false, body }, state };
+};
+
+async function readWithStatus(status) {
+  const { response, state } = statusResponse(status);
+  const read = reader(async () => response);
+  return { promise: read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }), state };
+}
+
+test('C14: a NaN status is rejected before the payload', async () => {
+  const { promise, state } = await readWithStatus(Number.NaN);
+  await rejects(promise, READER_ERROR_CODES.INVALID_STATUS);
+  assert.equal(state.contentRead, false);
+});
+
+test('C15: an Infinity status is rejected', async () => {
+  for (const status of [Infinity, -Infinity]) {
+    const { promise, state } = await readWithStatus(status);
+    await rejects(promise, READER_ERROR_CODES.INVALID_STATUS);
+    assert.equal(state.contentRead, false);
+  }
+});
+
+test('C16: a non-integer status is rejected', async () => {
+  for (const status of [200.5, 299.999, -0.5]) {
+    const { promise, state } = await readWithStatus(status);
+    await rejects(promise, READER_ERROR_CODES.INVALID_STATUS);
+    assert.equal(state.contentRead, false);
+  }
+});
+
+test('C17: a string status is rejected', async () => {
+  for (const status of ['200', '404', '']) {
+    const { promise, state } = await readWithStatus(status);
+    await rejects(promise, READER_ERROR_CODES.INVALID_STATUS);
+    assert.equal(state.contentRead, false);
+  }
+});
+
+test('C18: a missing or non-numeric status is rejected', async () => {
+  for (const status of [undefined, null, true, {}, []]) {
+    const { promise, state } = await readWithStatus(status);
+    await rejects(promise, READER_ERROR_CODES.INVALID_STATUS);
+    assert.equal(state.contentRead, false);
+  }
+});
+
+test('C19: an integer 2xx status still succeeds', async () => {
+  const bytes = syntheticBytes(TRUSTED_PATHS[1]);
+  for (const status of [200, 201, 299]) {
+    const { body } = watchedBody(bytes);
+    const read = reader(async () => ({ status, redirected: false, body }));
+    const result = await read({ path: TRUSTED_PATHS[1], ref: SYNTHETIC_COMMIT });
+    assert.equal(result.present, true);
+    assert.equal(result.bytes.toString('utf8'), bytes.toString('utf8'));
+  }
+  // A 4xx or 5xx integer keeps its own, distinct classification.
+  for (const status of [404, 500]) {
+    const { promise } = await readWithStatus(status);
+    await rejects(promise, READER_ERROR_CODES.HTTP_STATUS);
+  }
+});
+
+test('C20: an integer 3xx status is still classified as a redirect', async () => {
+  for (const status of [300, 301, 302, 307, 308, 399]) {
+    const { promise, state } = await readWithStatus(status);
+    await rejects(promise, READER_ERROR_CODES.REDIRECT);
+    assert.equal(state.contentRead, false);
+  }
+  // The redirected flag keeps priority over any status value.
+  const { body } = watchedBody(syntheticBytes(TRUSTED_PATHS[0]));
+  await rejects(
+    reader(async () => ({ status: 200, redirected: true, body }))({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }),
+    READER_ERROR_CODES.REDIRECT
+  );
+});
+
+const rejectsWithTransport = async (rejection) => {
+  const read = reader(async () => {
+    throw rejection;
+  });
+  await assert.rejects(
+    read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }),
+    (error) => {
+      assert.ok(error instanceof ReaderError, `expected a ReaderError, got ${error?.constructor?.name}`);
+      assert.equal(error.code, READER_ERROR_CODES.TRANSPORT);
+      assert.equal(error instanceof TypeError, false);
+      return true;
+    }
+  );
+};
+
+test('C21: a transport rejecting with null gives a ReaderError, not a TypeError', async () => {
+  await rejectsWithTransport(null);
+});
+
+test('C22: a transport rejecting with undefined gives a ReaderError', async () => {
+  await rejectsWithTransport(undefined);
+});
+
+test('C23: a transport rejecting with a string, number or boolean gives a ReaderError', async () => {
+  for (const rejection of ['socket hang up', 42, false, 0n]) {
+    await rejectsWithTransport(rejection);
+  }
+});
+
+test('C24: a transport rejecting with a plain object gives a ReaderError', async () => {
+  for (const rejection of [{}, { message: 42 }, { code: 'X' }, Object.create(null), []]) {
+    await rejectsWithTransport(rejection);
+  }
+  // A real Error keeps its own message.
+  const read = reader(async () => {
+    throw new Error('connection reset');
+  });
+  await assert.rejects(read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }), (error) => {
+    assert.equal(error.code, READER_ERROR_CODES.TRANSPORT);
+    assert.match(error.message, /connection reset/);
+    return true;
+  });
+});
+
+test('C25: a non-Error transport rejection reaches the verifier as READ_FAILED:TRANSPORT', async () => {
+  for (const rejection of [null, undefined, 'boom', { nope: true }]) {
+    const read = reader(async () => {
+      throw rejection;
+    });
+    const outcome = await verifyTrust({ manifest: activeManifest(), reader: read });
+    assert.equal(outcome.trustState, TRUST_STATES.TRUST_UNDETERMINED);
+    assert.equal(outcome.reason, 'READ_FAILED:TRANSPORT');
+    assert.equal(outcome.verifiedFileCount, 0);
+  }
+});
+
+test('C26: no payload behind an invalid status is ever decoded', async () => {
+  // The content is deliberately not valid base64: reaching the decoder would
+  // surface BAD_BASE64 instead of the status rejection.
+  for (const status of [Number.NaN, Infinity, 200.5, '200', undefined, null, 302, 404]) {
+    const state = { contentRead: false };
+    const body = {
+      type: 'file',
+      encoding: 'base64',
+      get content() {
+        state.contentRead = true;
+        return '!!!! not base64 !!!!';
+      }
+    };
+    const read = reader(async () => ({ status, redirected: false, body }));
+    await assert.rejects(read({ path: TRUSTED_PATHS[0], ref: SYNTHETIC_COMMIT }), (error) => {
+      assert.notEqual(error.code, READER_ERROR_CODES.BAD_BASE64);
+      return true;
+    });
+    assert.equal(state.contentRead, false, `content was read for status ${String(status)}`);
+  }
 });
