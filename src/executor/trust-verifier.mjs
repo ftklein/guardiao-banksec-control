@@ -23,6 +23,14 @@ const result = (trustState, reason, extra = {}) => ({
   ...extra
 });
 
+// A promise may be rejected with any value, not only an Error.
+function readerErrorCode(error) {
+  if (error && typeof error === 'object' && typeof error.code === 'string' && error.code.length > 0) {
+    return error.code;
+  }
+  return 'UNKNOWN';
+}
+
 function digestsMatch(expectedHex, actualHex) {
   const expected = Buffer.from(expectedHex, 'hex');
   const actual = Buffer.from(actualHex, 'hex');
@@ -78,17 +86,26 @@ export async function verifyTrust({ manifest, reader }) {
     } catch (error) {
       // Transport, HTTP, encoding and payload failures are all inconclusive:
       // we do not know whether the surface is intact, so we must not guess.
-      return result(TRUST_STATES.TRUST_UNDETERMINED, `READ_FAILED:${error.code || 'UNKNOWN'}`, {
+      // A rejection is not required to be an Error, so the code is read
+      // defensively: reaching for `.code` on null must not turn a fail-closed
+      // result into a thrown exception.
+      return result(TRUST_STATES.TRUST_UNDETERMINED, `READ_FAILED:${readerErrorCode(error)}`, {
         readerCallCount,
         verifiedFileCount,
         path
       });
     }
 
-    if (!read || read.present !== true || !Buffer.isBuffer(read.bytes)) {
-      // An authenticated, explicit statement that the pinned file is not there
-      // is a broken trust surface, not an inconclusive read.
+    if (read && typeof read === 'object' && read.present === false) {
+      // Only an explicit, authenticated statement that the pinned file is not
+      // there is a broken trust surface.
       return result(TRUST_STATES.TRUST_MISMATCH, 'FILE_ABSENT', { readerCallCount, verifiedFileCount, path });
+    }
+
+    if (!read || typeof read !== 'object' || read.present !== true || !Buffer.isBuffer(read.bytes)) {
+      // A malformed reader result is no evidence at all: it says nothing about
+      // whether the file exists, so it is inconclusive rather than a mismatch.
+      return result(TRUST_STATES.TRUST_UNDETERMINED, 'MALFORMED_READ', { readerCallCount, verifiedFileCount, path });
     }
 
     const actual = createHash('sha256').update(read.bytes).digest('hex');

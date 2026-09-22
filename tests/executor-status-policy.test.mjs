@@ -130,7 +130,8 @@ test('executor core with a verified surface: precondition only, never a merge', 
   const outcome = await runExecutorCore({
     manifest: activeManifest(),
     reader: stubReader(honestContents()),
-    targetHeadSha: SYNTHETIC_HEAD
+    targetHeadSha: SYNTHETIC_HEAD,
+    analyzedHeadSha: SYNTHETIC_HEAD
   });
   assert.equal(outcome.trustState, TRUST_STATES.TRUST_VERIFIED);
   assert.equal(outcome.trustVerified, true);
@@ -139,13 +140,68 @@ test('executor core with a verified surface: precondition only, never a merge', 
   assert.equal(outcome.finalGateSuccessAllowed, false);
   assert.equal(outcome.mergeAuthorized, false);
   assert.equal(outcome.targetHeadSha, SYNTHETIC_HEAD);
+  assert.equal(outcome.analyzedHeadSha, SYNTHETIC_HEAD);
+});
+
+// Regression for Codex finding 3 (PR #1): the core used to pass the caller's
+// own targetHeadSha as the analysed SHA, so the divergence check could never
+// fail through this path.
+test('R3: the core never manufactures head equality', async () => {
+  const verified = {
+    manifest: activeManifest(),
+    reader: stubReader(honestContents()),
+    targetHeadSha: SYNTHETIC_HEAD
+  };
+
+  // Analysed SHA missing: nothing to bind the declared head to.
+  const missing = await runExecutorCore(verified);
+  assert.equal(missing.trustState, TRUST_STATES.TRUST_VERIFIED);
+  assert.equal(missing.headBound, false);
+  assert.equal(missing.headReason, 'ANALYZED_HEAD_SHA_MISSING');
+  assert.equal(missing.canProceedToBankSec, false);
+  assert.equal(missing.targetHeadSha, null);
+  assert.equal(missing.analyzedHeadSha, null);
+
+  // BankSec analysed commit A while the caller declares commit B.
+  const diverged = await runExecutorCore({ ...verified, analyzedHeadSha: 'a'.repeat(40) });
+  assert.equal(diverged.headBound, false);
+  assert.equal(diverged.headReason, 'HEAD_SHA_DIVERGED');
+  assert.equal(diverged.canProceedToBankSec, false);
+  assert.equal(diverged.mergeAuthorized, false);
+
+  // A malformed analysed SHA is rejected on its own terms.
+  for (const analyzedHeadSha of ['', 'HEAD', SYNTHETIC_HEAD.toUpperCase(), SYNTHETIC_HEAD.slice(0, 39)]) {
+    const outcome = await runExecutorCore({ ...verified, analyzedHeadSha });
+    assert.equal(outcome.headBound, false);
+    assert.equal(outcome.canProceedToBankSec, false);
+  }
+
+  // Only an independently observed SHA equal to the declared one binds.
+  const bound = await runExecutorCore({ ...verified, analyzedHeadSha: SYNTHETIC_HEAD });
+  assert.equal(bound.headBound, true);
+  assert.equal(bound.canProceedToBankSec, true);
+  assert.equal(bound.finalGateSuccessAllowed, false);
+});
+
+test('R3b: bindHead only demands an analysed SHA when asked to', () => {
+  assert.equal(bindHead({ targetHeadSha: SYNTHETIC_HEAD }).bound, true);
+  assert.equal(bindHead({ targetHeadSha: SYNTHETIC_HEAD, requireAnalyzed: true }).bound, false);
+  assert.equal(
+    bindHead({ targetHeadSha: SYNTHETIC_HEAD, requireAnalyzed: true }).reason,
+    'ANALYZED_HEAD_SHA_MISSING'
+  );
+  assert.equal(
+    bindHead({ targetHeadSha: SYNTHETIC_HEAD, analyzedHeadSha: SYNTHETIC_HEAD, requireAnalyzed: true }).bound,
+    true
+  );
 });
 
 test('executor core refuses a verified surface presented with a malformed head', async () => {
   const outcome = await runExecutorCore({
     manifest: activeManifest(),
     reader: stubReader(honestContents()),
-    targetHeadSha: 'HEAD'
+    targetHeadSha: 'HEAD',
+    analyzedHeadSha: 'HEAD'
   });
   assert.equal(outcome.trustState, TRUST_STATES.TRUST_VERIFIED);
   assert.equal(outcome.headBound, false);

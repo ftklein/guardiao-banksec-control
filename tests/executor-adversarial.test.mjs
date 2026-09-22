@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateTarget } from '../src/validate-target.mjs';
+import { validateTarget, loadSchema, CONTROL_PLANE_SCHEMA_ID, SCHEMA_PATH } from '../src/validate-target.mjs';
 import { runExecutorCore } from '../src/executor/executor-core.mjs';
 import { verifyTrust, TRUST_STATES } from '../src/executor/trust-verifier.mjs';
 import * as constants from '../src/executor/constants.mjs';
@@ -330,4 +330,42 @@ test('synthetic fixtures never resemble a real digest of a real file', () => {
   // an obvious counting pattern, not a commit of any repository.
   assert.match(syntheticBytes(TRUSTED_PATHS[0]).toString('utf8'), /^synthetic fixture content/);
   assert.equal(SYNTHETIC_COMMIT, '0123456789abcdef0123456789abcdef01234567');
+});
+
+// Regression for Codex finding 4 (PR #1): the semantic invariants were gated on
+// the presence of `oneOf`, so any caller-supplied schema with a `oneOf` branch
+// received BankSec-specific owner, repository, status and trust-surface errors.
+test('R4: BankSec invariants never leak into a caller-supplied schema', () => {
+  const custom = { oneOf: [{ type: 'object' }] };
+  const result = validateTarget({ target: { owner: 'acme', repository: 'anything' } }, custom);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.valid, true);
+
+  const anotherShape = validateTarget(
+    { statusContext: 'ci/build', trust: { state: 'ACTIVE', trustedFiles: [] } },
+    { oneOf: [{ type: 'object' }] }
+  );
+  assert.deepEqual(anotherShape.errors, []);
+
+  // The control plane's own schema still applies them in full.
+  const schema = loadSchema();
+  assert.equal(schema.$id, CONTROL_PLANE_SCHEMA_ID);
+  const wrongOwner = activeManifest();
+  wrongOwner.target.owner = 'acme';
+  assert.match(validateTarget(wrongOwner, schema).errors.join('\n'), /governs only ftklein/);
+});
+
+test('R4b: a schema without the control plane identity is refused outright', () => {
+  const schema = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
+  assert.equal(schema.$id, CONTROL_PLANE_SCHEMA_ID);
+
+  const sandbox = mkdtempSync(join(tmpdir(), 'banksec-schema-'));
+  try {
+    const stripped = join(sandbox, 'target.schema.json');
+    const { $id, ...withoutId } = schema;
+    writeFileSync(stripped, JSON.stringify(withoutId));
+    assert.throws(() => loadSchema(stripped), /missing the control plane \$id/);
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 });

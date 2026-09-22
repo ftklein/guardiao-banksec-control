@@ -76,9 +76,13 @@ Trust states, and what each permits:
 | State | Meaning | Gate success |
 | --- | --- | --- |
 | `NOT_TRUSTED` | `BOOTSTRAP_PENDING`, an invalid manifest, or the wrong target. No file is ever read. | prohibited |
-| `TRUST_UNDETERMINED` | A read did not conclude — transport error, non-2xx, unexpected or malformed payload. | prohibited |
-| `TRUST_MISMATCH` | A pinned file is absent, or its bytes do not hash to the pinned digest. | prohibited |
+| `TRUST_UNDETERMINED` | A read did not conclude — transport error, non-2xx, unexpected or malformed payload, or a reader result that is not well formed. A rejection that is not an `Error` lands here too, never as a thrown exception. | prohibited |
+| `TRUST_MISMATCH` | A pinned file is **explicitly** reported absent, or its bytes do not hash to the pinned digest. A malformed result is no evidence of absence, so it is inconclusive instead. | prohibited |
 | `TRUST_VERIFIED` | All four files match. | **still prohibited in this phase** |
+
+Head binding is caller-supplied and never manufactured: `runExecutorCore` takes
+the independently observed `analyzedHeadSha` alongside the declared
+`targetHeadSha`, and refuses to bind when it is absent, malformed or diverging.
 
 `TRUST_VERIFIED` is a *precondition*, not a verdict. It is deliberately not the
 `banksec/trusted-gate` status, which stays reserved for a later phase combining

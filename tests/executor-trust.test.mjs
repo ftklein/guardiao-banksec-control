@@ -107,3 +107,56 @@ test('digest comparison is not short-circuited by string identity alone', async 
   const outcome = await verifyTrust({ manifest: activeManifest(surface), reader: stubReader(honestContents()) });
   assert.notEqual(outcome.trustState, TRUST_STATES.TRUST_VERIFIED);
 });
+
+// Regression for Codex finding 1 (PR #1): reading `.code` on a rejection value
+// that is not an Error used to throw a TypeError out of verifyTrust, escaping
+// the fail-closed result contract entirely.
+test('R1: a rejection that is not an Error still yields TRUST_UNDETERMINED', async () => {
+  for (const rejection of [null, undefined, 'socket hang up', 42, false, { code: 42 }, { code: '' }]) {
+    const reader = async () => {
+      throw rejection;
+    };
+    const outcome = await verifyTrust({ manifest: activeManifest(), reader });
+    assert.equal(outcome.trustState, TRUST_STATES.TRUST_UNDETERMINED);
+    assert.equal(outcome.reason, 'READ_FAILED:UNKNOWN');
+    assert.equal(outcome.verifiedFileCount, 0);
+  }
+
+  // A well formed error code is still reported as itself.
+  const coded = async () => {
+    throw Object.assign(new Error('nope'), { code: 'HTTP_STATUS' });
+  };
+  const outcome = await verifyTrust({ manifest: activeManifest(), reader: coded });
+  assert.equal(outcome.reason, 'READ_FAILED:HTTP_STATUS');
+});
+
+// Regression for Codex finding 2 (PR #1): a malformed reader result used to be
+// reported as FILE_ABSENT, claiming authenticated evidence of absence where
+// there was none.
+test('R2: a malformed reader result is inconclusive, not an absence', async () => {
+  for (const value of [
+    undefined,
+    null,
+    'bytes',
+    42,
+    {},
+    { present: true },
+    { present: true, bytes: 'not-a-buffer' },
+    { present: true, bytes: null },
+    { present: 'false' },
+    { bytes: Buffer.from('x') }
+  ]) {
+    const outcome = await verifyTrust({ manifest: activeManifest(), reader: async () => value });
+    assert.equal(outcome.trustState, TRUST_STATES.TRUST_UNDETERMINED, `for ${JSON.stringify(value)}`);
+    assert.equal(outcome.reason, 'MALFORMED_READ');
+  }
+});
+
+test('R2b: only an explicit present:false is an absence', async () => {
+  const outcome = await verifyTrust({
+    manifest: activeManifest(),
+    reader: async ({ path, ref }) => ({ present: false, path, ref })
+  });
+  assert.equal(outcome.trustState, TRUST_STATES.TRUST_MISMATCH);
+  assert.equal(outcome.reason, 'FILE_ABSENT');
+});

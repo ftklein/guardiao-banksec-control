@@ -17,6 +17,11 @@ import { dirname, join, resolve } from 'node:path';
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SCHEMA_PATH = join(HERE, '..', 'schemas', 'target.schema.json');
 
+// The semantic invariants below are specific to this control plane, so they may
+// only be applied to this control plane's own schema, identified explicitly.
+export const CONTROL_PLANE_SCHEMA_ID =
+  'https://github.com/ftklein/guardiao-banksec-control/schemas/target.schema.json';
+
 const ANNOTATIONS = new Set(['$schema', '$id', 'title', 'description', 'definitions']);
 const SUPPORTED = new Set([
   '$ref', 'type', 'const', 'enum', 'pattern', 'properties', 'required',
@@ -32,7 +37,14 @@ export function readJsonFile(path) {
 }
 
 export function loadSchema(path = SCHEMA_PATH) {
-  return readJsonFile(path);
+  const schema = readJsonFile(path);
+  if (!schema || schema.$id !== CONTROL_PLANE_SCHEMA_ID) {
+    // Without its canonical identity the schema cannot carry the semantic
+    // invariants, so loading it at all is refused rather than silently
+    // validating less than it should.
+    throw new Error(`${path}: schema is missing the control plane $id`);
+  }
+  return schema;
 }
 
 function typeOf(value) {
@@ -201,9 +213,9 @@ export function validateTarget(manifest, schema = loadSchema()) {
   const errors = [];
   check(schema, manifest, 'manifest', schema, errors);
   // Semantic invariants are only meaningful for this control plane's own
-  // schema; a caller passing an arbitrary schema (validator self-tests) gets
-  // structural validation alone.
-  if (schema && Array.isArray(schema.oneOf)) {
+  // schema, identified by its $id; a caller passing any other schema gets
+  // structural validation alone and never BankSec-specific errors.
+  if (schema && schema.$id === CONTROL_PLANE_SCHEMA_ID) {
     errors.push(...checkTrustSurfaceInvariants(manifest));
   }
   return { valid: errors.length === 0, errors };

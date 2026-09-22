@@ -29,9 +29,14 @@ export function validateHeadSha(value) {
  * analysed. This is prepared here and enforced now, so a later phase cannot
  * forget it.
  */
-export function bindHead({ targetHeadSha, analyzedHeadSha }) {
+export function bindHead({ targetHeadSha, analyzedHeadSha, requireAnalyzed = false }) {
   const declared = validateHeadSha(targetHeadSha);
   if (!declared.valid) return { bound: false, reason: declared.reason };
+  if (requireAnalyzed && analyzedHeadSha === undefined) {
+    // The caller claims a head but offers no independently observed SHA to
+    // bind it to, so there is nothing to compare and nothing to trust.
+    return { bound: false, reason: 'ANALYZED_HEAD_SHA_MISSING' };
+  }
   if (analyzedHeadSha !== undefined) {
     const analyzed = validateHeadSha(analyzedHeadSha);
     if (!analyzed.valid) return { bound: false, reason: `ANALYZED_${analyzed.reason}` };
@@ -54,9 +59,9 @@ export function canPublishTrustedGateSuccess() {
   return { allowed: false, reason: FINAL_STATUS_RESERVED_REASON };
 }
 
-export function evaluateStatusPolicy({ trustState, targetHeadSha, analyzedHeadSha }) {
+export function evaluateStatusPolicy({ trustState, targetHeadSha, analyzedHeadSha, requireAnalyzed = false }) {
   const known = Object.values(TRUST_STATES).includes(trustState);
-  const head = bindHead({ targetHeadSha, analyzedHeadSha });
+  const head = bindHead({ targetHeadSha, analyzedHeadSha, requireAnalyzed });
   const finalStatus = canPublishTrustedGateSuccess();
 
   const trustPreconditionSatisfied = known && head.bound && isTrustPreconditionSatisfied(trustState);

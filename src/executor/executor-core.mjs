@@ -9,14 +9,21 @@ import { evaluateStatusPolicy } from './status-policy.mjs';
 export { TRUST_STATES };
 
 /**
- * @param {{ manifest: object, reader?: Function, targetHeadSha: string }} input
+ * `analyzedHeadSha` is the SHA independently observed by whatever actually
+ * analysed the target. It must be supplied by the caller and must match the
+ * declared `targetHeadSha`: manufacturing that equality here would make the
+ * binding vacuous, so an absent or diverging analysed SHA leaves the head
+ * unbound and nothing may proceed.
+ *
+ * @param {{ manifest: object, reader?: Function, targetHeadSha: string, analyzedHeadSha?: string }} input
  */
-export async function runExecutorCore({ manifest, reader, targetHeadSha } = {}) {
+export async function runExecutorCore({ manifest, reader, targetHeadSha, analyzedHeadSha } = {}) {
   const trust = await verifyTrust({ manifest, reader });
   const policy = evaluateStatusPolicy({
     trustState: trust.trustState,
     targetHeadSha,
-    analyzedHeadSha: targetHeadSha
+    analyzedHeadSha,
+    requireAnalyzed: true
   });
 
   return {
@@ -26,6 +33,7 @@ export async function runExecutorCore({ manifest, reader, targetHeadSha } = {}) 
     verifiedFileCount: trust.verifiedFileCount,
     readerCallCount: trust.readerCallCount,
     targetHeadSha: policy.headBound ? targetHeadSha : null,
+    analyzedHeadSha: policy.headBound ? analyzedHeadSha : null,
     headBound: policy.headBound,
     headReason: policy.headReason,
     // A precondition, nothing more: it authorizes running BankSec later, it
