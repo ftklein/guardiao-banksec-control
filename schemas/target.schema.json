@@ -2,25 +2,50 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/ftklein/guardiao-banksec-control/schemas/target.schema.json",
   "title": "Guardiao BankSec control plane target manifest",
-  "description": "Declarative trust manifest for a single target repository. Two states are defined: BOOTSTRAP_PENDING (no trust granted) and ACTIVE (an explicitly approved commit plus an explicit trust surface).",
+  "description": "Declarative trust manifest for the single governed target repository. The owner, repository and status context are fixed constants. Two states are defined: BOOTSTRAP_PENDING (no trust granted) and ACTIVE (one explicitly approved commit plus the complete four-file trust surface). Uniqueness and exact set equality of the trust surface are enforced semantically by src/validate-target.mjs, in addition to this schema.",
   "oneOf": [
     {
       "title": "BOOTSTRAP_PENDING",
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "target", "statusContext", "trust"],
+      "required": [
+        "schemaVersion",
+        "target",
+        "statusContext",
+        "trust"
+      ],
       "properties": {
-        "schemaVersion": { "const": 1 },
-        "target": { "$ref": "#/definitions/target" },
-        "statusContext": { "$ref": "#/definitions/statusContext" },
+        "schemaVersion": {
+          "const": 1
+        },
+        "target": {
+          "$ref": "#/definitions/target"
+        },
+        "statusContext": {
+          "$ref": "#/definitions/statusContext"
+        },
         "trust": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "approvedCommit", "trustedFiles"],
+          "required": [
+            "state",
+            "approvedCommit",
+            "trustedFiles"
+          ],
           "properties": {
-            "state": { "const": "BOOTSTRAP_PENDING" },
-            "approvedCommit": { "type": "null" },
-            "trustedFiles": { "type": "array", "maxItems": 0, "items": { "$ref": "#/definitions/trustedFile" } }
+            "state": {
+              "const": "BOOTSTRAP_PENDING"
+            },
+            "approvedCommit": {
+              "type": "null"
+            },
+            "trustedFiles": {
+              "type": "array",
+              "maxItems": 0,
+              "items": {
+                "$ref": "#/definitions/trustedFile"
+              }
+            }
           }
         }
       }
@@ -29,19 +54,46 @@
       "title": "ACTIVE",
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "target", "statusContext", "trust"],
+      "required": [
+        "schemaVersion",
+        "target",
+        "statusContext",
+        "trust"
+      ],
       "properties": {
-        "schemaVersion": { "const": 1 },
-        "target": { "$ref": "#/definitions/target" },
-        "statusContext": { "$ref": "#/definitions/statusContext" },
+        "schemaVersion": {
+          "const": 1
+        },
+        "target": {
+          "$ref": "#/definitions/target"
+        },
+        "statusContext": {
+          "$ref": "#/definitions/statusContext"
+        },
         "trust": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "approvedCommit", "trustedFiles"],
+          "required": [
+            "state",
+            "approvedCommit",
+            "trustedFiles"
+          ],
           "properties": {
-            "state": { "const": "ACTIVE" },
-            "approvedCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-            "trustedFiles": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/trustedFile" } }
+            "state": {
+              "const": "ACTIVE"
+            },
+            "approvedCommit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "trustedFiles": {
+              "type": "array",
+              "minItems": 4,
+              "items": {
+                "$ref": "#/definitions/trustedFile"
+              },
+              "maxItems": 4
+            }
           }
         }
       }
@@ -51,17 +103,32 @@
     "target": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["owner", "repository"],
+      "required": [
+        "owner",
+        "repository"
+      ],
       "properties": {
-        "owner": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$" },
-        "repository": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,100}$" }
+        "owner": {
+          "type": "string",
+          "const": "ftklein"
+        },
+        "repository": {
+          "type": "string",
+          "const": "GuardiaoSystem"
+        }
       }
     },
-    "statusContext": { "type": "string", "pattern": "^[a-z0-9][a-z0-9/_.-]{0,99}$" },
+    "statusContext": {
+      "type": "string",
+      "const": "banksec/trusted-gate"
+    },
     "trustedFile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256"],
+      "required": [
+        "path",
+        "sha256"
+      ],
       "properties": {
         "path": {
           "type": "string",
@@ -72,7 +139,10 @@
             "security/banksec/postgres-banksec-readonly.sql"
           ]
         },
-        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     }
   }

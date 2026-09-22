@@ -41,6 +41,19 @@ credential.
    have been visible, and whether any downstream system must be rotated too —
    and record the outcome before any further work continues.
 
+## Data read from the target repository
+
+The executor treats every byte it reads from the governed repository as
+untrusted data. It is hashed and compared, and nothing else: it is never
+executed, imported, evaluated, interpreted as a shell command or as SQL, run as
+a package script, or loaded as a workflow, git hook or submodule, and no
+checkout of the target is ever performed. Tests assert these properties against
+the sources directly, so the guarantee cannot quietly decay.
+
+A read that does not conclude is never resolved optimistically. An HTTP 404 is
+treated as inconclusive rather than as proof of absence, because a 404 can also
+mean the wrong ref, the wrong repository or insufficient access.
+
 ## Reporting
 
 Report a suspected exposure or a weakness in this control plane privately to the
