@@ -10,11 +10,17 @@
 //     silently ignore a constraint it does not implement (fail closed).
 
 import { readFileSync } from 'node:fs';
+import { TARGET_OWNER, TARGET_REPOSITORY, STATUS_CONTEXT, TRUSTED_PATHS } from './executor/constants.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SCHEMA_PATH = join(HERE, '..', 'schemas', 'target.schema.json');
+
+// The semantic invariants below are specific to this control plane, so they may
+// only be applied to this control plane's own schema, identified explicitly.
+export const CONTROL_PLANE_SCHEMA_ID =
+  'https://github.com/ftklein/guardiao-banksec-control/schemas/target.schema.json';
 
 const ANNOTATIONS = new Set(['$schema', '$id', 'title', 'description', 'definitions']);
 const SUPPORTED = new Set([
@@ -31,7 +37,14 @@ export function readJsonFile(path) {
 }
 
 export function loadSchema(path = SCHEMA_PATH) {
-  return readJsonFile(path);
+  const schema = readJsonFile(path);
+  if (!schema || schema.$id !== CONTROL_PLANE_SCHEMA_ID) {
+    // Without its canonical identity the schema cannot carry the semantic
+    // invariants, so loading it at all is refused rather than silently
+    // validating less than it should.
+    throw new Error(`${path}: schema is missing the control plane $id`);
+  }
+  return schema;
 }
 
 function typeOf(value) {
@@ -147,9 +160,64 @@ function check(schema, value, where, root, errors) {
   }
 }
 
+// Invariants the schema alone cannot express. JSON Schema can bound the number
+// of entries, but it cannot say "these exact four paths, each exactly once", so
+// an ACTIVE manifest is additionally checked semantically here. Two entries for
+// the same path are rejected even when their digests differ.
+export function checkTrustSurfaceInvariants(manifest) {
+  const errors = [];
+  if (!manifest || typeof manifest !== 'object') return errors;
+
+  if (manifest.target && typeof manifest.target === 'object') {
+    if (manifest.target.owner !== TARGET_OWNER) {
+      errors.push(`manifest/target/owner: this control plane governs only ${TARGET_OWNER}`);
+    }
+    if (manifest.target.repository !== TARGET_REPOSITORY) {
+      errors.push(`manifest/target/repository: this control plane governs only ${TARGET_REPOSITORY}`);
+    }
+  }
+  if ('statusContext' in manifest && manifest.statusContext !== STATUS_CONTEXT) {
+    errors.push(`manifest/statusContext: only ${STATUS_CONTEXT} is allowed`);
+  }
+
+  const trust = manifest.trust;
+  if (!trust || typeof trust !== 'object' || trust.state !== 'ACTIVE') return errors;
+
+  const entries = trust.trustedFiles;
+  if (!Array.isArray(entries)) return errors;
+
+  const paths = entries.map((entry) => (entry && typeof entry === 'object' ? entry.path : undefined));
+  const unique = new Set(paths);
+  if (paths.length !== unique.size) {
+    errors.push('manifest/trust/trustedFiles: duplicate path entries are not allowed');
+  }
+  for (const path of TRUSTED_PATHS) {
+    if (!unique.has(path)) {
+      errors.push(`manifest/trust/trustedFiles: the trust surface is incomplete, "${path}" is missing`);
+    }
+  }
+  for (const path of unique) {
+    if (!TRUSTED_PATHS.includes(path)) {
+      errors.push(`manifest/trust/trustedFiles: "${String(path)}" is not part of the trust surface`);
+    }
+  }
+  if (unique.size !== TRUSTED_PATHS.length || paths.length !== TRUSTED_PATHS.length) {
+    errors.push(
+      `manifest/trust/trustedFiles: an ACTIVE manifest must pin exactly ${TRUSTED_PATHS.length} files, got ${paths.length}`
+    );
+  }
+  return errors;
+}
+
 export function validateTarget(manifest, schema = loadSchema()) {
   const errors = [];
   check(schema, manifest, 'manifest', schema, errors);
+  // Semantic invariants are only meaningful for this control plane's own
+  // schema, identified by its $id; a caller passing any other schema gets
+  // structural validation alone and never BankSec-specific errors.
+  if (schema && schema.$id === CONTROL_PLANE_SCHEMA_ID) {
+    errors.push(...checkTrustSurfaceInvariants(manifest));
+  }
   return { valid: errors.length === 0, errors };
 }
 

@@ -62,7 +62,14 @@ test('CP12b: a structurally valid ACTIVE manifest still does not report a trust 
     trust: {
       state: 'ACTIVE',
       approvedCommit: 'c'.repeat(40),
-      trustedFiles: [{ path: 'security/banksec/baseline.md', sha256: 'd'.repeat(64) }]
+      // The complete four-file trust surface: an ACTIVE manifest is only
+      // structurally valid with all of it, and this test needs a valid one.
+      trustedFiles: [
+        { path: 'security/banksec/security-cycle.sh', sha256: 'd'.repeat(64) },
+        { path: 'security/banksec/ci-review.md', sha256: 'e'.repeat(64) },
+        { path: 'security/banksec/baseline.md', sha256: 'f'.repeat(64) },
+        { path: 'security/banksec/postgres-banksec-readonly.sql', sha256: '0'.repeat(64) }
+      ]
     }
   };
   withTempManifest(activeManifest, (path) => {

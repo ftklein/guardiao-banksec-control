@@ -37,7 +37,7 @@ be in one of two states:
 | State | `approvedCommit` | `trustedFiles` | Meaning |
 | --- | --- | --- | --- |
 | `BOOTSTRAP_PENDING` | must be `null` | must be empty | No trust has been granted. **Never authorizes a merge.** |
-| `ACTIVE` | 40 lowercase hex characters | at least one entry, each with a SHA-256 digest | An operator has explicitly approved one commit and one trust surface. |
+| `ACTIVE` | 40 lowercase hex characters | **exactly these four paths**, each once, each with a SHA-256 digest | An operator has explicitly approved one commit and the complete trust surface. |
 
 The trust surface is closed: only these paths may ever appear in `trustedFiles`.
 
@@ -49,7 +49,60 @@ security/banksec/postgres-banksec-readonly.sql
 ```
 
 Arbitrary paths coming from a manifest are rejected by the schema, not by
-convention.
+convention. An `ACTIVE` manifest must pin **all four** — a partial surface is
+never legitimate, because an unpinned file is an unverified file. The schema
+bounds the count; `src/validate-target.mjs` additionally enforces exact set
+equality and rejects a duplicated path even when its digests differ.
+
+The governed target is fixed too: `owner`, `repository` and `statusContext` are
+schema constants. This control plane cannot be pointed at another repository by
+editing a manifest.
+
+## The trusted executor core
+
+`src/executor/` decides whether the pinned trust surface is intact. It is
+deterministic, dependency-free and entirely driven by injected components.
+
+| Module | Responsibility |
+| --- | --- |
+| `constants.mjs` | The four public constants. Never a token, URL or secret. |
+| `github-reader.mjs` | Reads one pinned file at one exact commit. HTTPS only, `api.github.com` only, no redirects, base64 only, 4 MiB cap, and only paths inside the trust surface at the approved commit. The HTTP transport is always injected. |
+| `trust-verifier.mjs` | Hashes the bytes and compares them, in constant time, against the pinned digests. |
+| `status-policy.mjs` | Decides offline whether a status *would* be permitted. Publishes nothing. |
+| `executor-core.mjs` | Orchestrates the above. No ambient credentials, no environment reads, no import-time side effects. |
+
+Trust states, and what each permits:
+
+| State | Meaning | Gate success |
+| --- | --- | --- |
+| `NOT_TRUSTED` | `BOOTSTRAP_PENDING`, an invalid manifest, or the wrong target. No file is ever read. | prohibited |
+| `TRUST_UNDETERMINED` | A read did not conclude — transport error, non-2xx, unexpected or malformed payload, or a reader result that is not well formed. A rejection that is not an `Error` lands here too, never as a thrown exception. | prohibited |
+| `TRUST_MISMATCH` | A pinned file is **explicitly** reported absent, or its bytes do not hash to the pinned digest. A malformed result is no evidence of absence, so it is inconclusive instead. | prohibited |
+| `TRUST_VERIFIED` | All four files match. | **still prohibited in this phase** |
+
+Head binding is caller-supplied and never manufactured: `runExecutorCore` takes
+the independently observed `analyzedHeadSha` alongside the declared
+`targetHeadSha`, and refuses to bind when it is absent, malformed or diverging.
+
+`TRUST_VERIFIED` is a *precondition*, not a verdict. It is deliberately not the
+`banksec/trusted-gate` status, which stays reserved for a later phase combining
+the trusted executor with deterministic BankSec, semantic BankSec and HEAD
+binding. No function in this repository can turn one into the other, and
+`canPublishTrustedGateSuccess()` refuses for every input.
+
+### Bytes from the target are data, never code
+
+Everything read from the target repository is hashed and nothing else. It is
+never executed, imported, sourced, evaluated, interpreted as shell or SQL, run
+as a package script, loaded as a workflow or a git hook, or checked out. No
+`child_process`, no `eval`, no `Function()`, no dynamic import, no filesystem
+write — each of these is asserted by a test over the sources themselves.
+
+### Phase 2A has made no call against the target
+
+The reader has never been pointed at the real repository. Every test drives it
+through an injected transport with synthetic fixtures, no credential exists in
+this repository, and none is read from the environment.
 
 ## Phase 1 scope
 
