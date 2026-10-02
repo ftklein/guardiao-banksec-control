@@ -141,12 +141,48 @@ test('a complete, well formed ACTIVE manifest is accepted', () => {
   valid(activeManifest());
 });
 
-test('the committed manifest is still BOOTSTRAP_PENDING and still valid', () => {
-  const committed = JSON.parse(readFileSync(join(ROOT, 'targets', 'guardiao.json'), 'utf8'));
+// The committed manifest may be BOOTSTRAP_PENDING or ACTIVE. What must hold in
+// either state is that it is valid and its lifecycle is internally consistent.
+// Neither state implies trust: this never runs the executor and never reads the
+// target repository.
+function assertLifecycleConsistent(committed) {
   valid(committed);
-  assert.equal(committed.trust.state, 'BOOTSTRAP_PENDING');
-  assert.equal(committed.trust.approvedCommit, null);
-  assert.deepEqual(committed.trust.trustedFiles, []);
+  const { state, approvedCommit, trustedFiles } = committed.trust;
+  if (state === 'BOOTSTRAP_PENDING') {
+    assert.equal(approvedCommit, null);
+    assert.deepEqual(trustedFiles, []);
+  } else if (state === 'ACTIVE') {
+    assert.match(approvedCommit, /^[0-9a-f]{40}$/);
+    const paths = trustedFiles.map((entry) => entry.path);
+    assert.equal(paths.length, TRUSTED_PATHS.length, 'the trust surface must be exactly four files');
+    assert.equal(new Set(paths).size, paths.length, 'no duplicate paths');
+    assert.deepEqual([...paths].sort(), [...TRUSTED_PATHS].sort(), 'exactly the allowed paths, none extra');
+    for (const entry of trustedFiles) assert.match(entry.sha256, /^[0-9a-f]{64}$/);
+  } else {
+    assert.fail(`unknown lifecycle state: ${state}`);
+  }
+}
+
+test('the committed manifest is valid and its lifecycle is internally consistent', () => {
+  const committed = JSON.parse(readFileSync(join(ROOT, 'targets', 'guardiao.json'), 'utf8'));
+  assertLifecycleConsistent(committed);
+});
+
+test('the lifecycle consistency check accepts both states and rejects inconsistent ones', () => {
+  assertLifecycleConsistent(bootstrapManifest());
+  assertLifecycleConsistent(activeManifest());
+
+  const bootstrapWithCommit = bootstrapManifest();
+  bootstrapWithCommit.trust.approvedCommit = SYNTHETIC_COMMIT;
+  assert.throws(() => assertLifecycleConsistent(bootstrapWithCommit));
+
+  const missingFile = activeManifest();
+  missingFile.trust.trustedFiles.pop();
+  assert.throws(() => assertLifecycleConsistent(missingFile));
+
+  const uppercaseDigest = activeManifest();
+  uppercaseDigest.trust.trustedFiles[0].sha256 = 'B'.repeat(64);
+  assert.throws(() => assertLifecycleConsistent(uppercaseDigest));
 });
 
 // ---------------------------------------------------------------- hygiene ---

@@ -28,22 +28,57 @@ jobs:
       - name: Validate target manifest
         run: node src/validate-target.mjs targets/guardiao.json
 
-      - name: Trust gate must report BOOTSTRAP_PENDING (exit 2, never a pass)
+      - name: Trust gate must be state-aware and is never a trust pass
+        # The gate accepts only the EXACT transcript that src/verify-trust.mjs
+        # prints for each lifecycle state. It is an allowlist, not a denylist:
+        # any additional, missing, reordered or reworded line fails, so no
+        # success-looking text can be smuggled in next to the expected lines.
+        # If verify-trust wording ever changes on purpose, update this gate
+        # and tests/trust-state.test.mjs together.
         run: |
+          actual="$(mktemp)"
+          expected="$(mktemp)"
+          fail() { echo "::error::$1"; exit 1; }
+
           set +e
-          output="$(node src/verify-trust.mjs targets/guardiao.json 2>&1)"
+          node src/verify-trust.mjs targets/guardiao.json >"$actual" 2>&1
           code=$?
           set -e
-          printf '%s\n' "$output"
-          if [ "$code" -ne 2 ]; then
-            echo "::error::expected exit 2 (BOOTSTRAP_PENDING), got $code"
-            exit 1
-          fi
-          case "$output" in
-            *"TRUST RESULT: NOT TRUSTED"*) ;;
-            *) echo "::error::trust gate did not report NOT TRUSTED"; exit 1 ;;
+          cat "$actual"
+
+          case "$code" in
+            0)
+              fail "exit 0 is reserved for a future executor and must never be produced by the static control plane"
+              ;;
+            2)
+              printf '%s\n' \
+                'TRUST STATE: BOOTSTRAP_PENDING' \
+                'TRUST RESULT: NOT TRUSTED' \
+                'No commit is approved and the trust surface is empty.' \
+                'BOOTSTRAP_PENDING never authorizes a merge in the target repository.' \
+                >"$expected"
+              cmp -s "$actual" "$expected" || fail "exit 2 transcript is not exactly the allowed BOOTSTRAP_PENDING transcript"
+              echo "Bootstrap gate held: exit 2 is the expected BOOTSTRAP_PENDING state and is NOT a trust pass."
+              ;;
+            3)
+              commit_line="$(sed -n '3p' "$actual")"
+              commit_pattern='^Manifest structure is well formed: approved commit ([0-9a-f]{40}), 4 trusted file\(s\)\.$'
+              [[ "$commit_line" =~ $commit_pattern ]] || fail "exit 3 transcript has no well formed approved-commit line"
+              printf '%s\n' \
+                'TRUST STATE: ACTIVE' \
+                'TRUST RESULT: UNDETERMINED (structure only)' \
+                "$commit_line" \
+                'The remote verification executor is NOT installed in this phase, so the target' \
+                'repository was not contacted and no file digest was compared. This result must' \
+                'not be treated as a verified trust decision.' \
+                >"$expected"
+              cmp -s "$actual" "$expected" || fail "exit 3 transcript is not exactly the allowed ACTIVE transcript"
+              echo "Active gate held: exit 3 means structurally active, runtime verification not performed. It is NOT a trust pass."
+              ;;
+            *)
+              fail "unexpected trust gate exit code $code (only 2 or 3 are acceptable)"
+              ;;
           esac
-          echo "Bootstrap gate held: exit 2 is the expected state and is NOT a trust pass."
 
       - name: Public safety check
         run: node src/public-safety-check.mjs
