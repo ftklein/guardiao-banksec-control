@@ -148,14 +148,71 @@ test('CP10b: an unknown trust state is rejected', () => {
   assertInvalid(manifest({ state: 'TRUSTED', approvedCommit: COMMIT, trustedFiles: completeSurface() }));
 });
 
-test('CP18: the committed manifest is BOOTSTRAP_PENDING and grants nothing', () => {
-  const committed = JSON.parse(readFileSync(join(ROOT, 'targets', 'guardiao.json'), 'utf8'));
+// The committed manifest may be BOOTSTRAP_PENDING or ACTIVE. This asserts that
+// whichever it is, its lifecycle is internally consistent. It deliberately
+// pins no candidate commit and no digest: preparing the lifecycle is not
+// approving a candidate.
+function assertLifecycleConsistent(committed) {
   assertValid(committed);
-  assert.equal(committed.trust.state, 'BOOTSTRAP_PENDING');
-  assert.equal(committed.trust.approvedCommit, null);
-  assert.deepEqual(committed.trust.trustedFiles, []);
   assert.equal(committed.target.owner, 'ftklein');
   assert.equal(committed.target.repository, 'GuardiaoSystem');
+  assert.equal(committed.statusContext, 'banksec/trusted-gate');
+
+  const { state, approvedCommit, trustedFiles } = committed.trust;
+  if (state === 'BOOTSTRAP_PENDING') {
+    assert.equal(approvedCommit, null);
+    assert.deepEqual(trustedFiles, []);
+  } else if (state === 'ACTIVE') {
+    assert.match(approvedCommit, /^[0-9a-f]{40}$/);
+    const paths = trustedFiles.map((entry) => entry.path);
+    assert.equal(paths.length, TRUST_SURFACE.length, 'the trust surface must be exactly four files');
+    assert.equal(new Set(paths).size, paths.length, 'no duplicate paths');
+    assert.deepEqual([...paths].sort(), [...TRUST_SURFACE].sort(), 'exactly the allowed paths, none extra');
+    for (const entry of trustedFiles) assert.match(entry.sha256, /^[0-9a-f]{64}$/);
+  } else {
+    assert.fail(`unknown lifecycle state: ${state}`);
+  }
+}
+
+test('CP18: the committed manifest is structurally valid, pinned to its target, and lifecycle-consistent', () => {
+  const committed = JSON.parse(readFileSync(join(ROOT, 'targets', 'guardiao.json'), 'utf8'));
+  assertLifecycleConsistent(committed);
+});
+
+test('CP18b: the lifecycle check accepts a well-formed manifest in either state', () => {
+  assertLifecycleConsistent(bootstrap());
+  assertLifecycleConsistent(active());
+});
+
+test('CP18c: the lifecycle check rejects inconsistent manifests in either state', () => {
+  // BOOTSTRAP_PENDING must grant nothing.
+  const bootstrapWithCommit = bootstrap();
+  bootstrapWithCommit.trust.approvedCommit = COMMIT;
+  assert.throws(() => assertLifecycleConsistent(bootstrapWithCommit));
+
+  // ACTIVE must carry exactly the four allowed files with valid lowercase hashes.
+  const missingFile = active();
+  missingFile.trust.trustedFiles.pop();
+  assert.throws(() => assertLifecycleConsistent(missingFile));
+
+  const duplicatePath = active();
+  duplicatePath.trust.trustedFiles[1].path = duplicatePath.trust.trustedFiles[0].path;
+  assert.throws(() => assertLifecycleConsistent(duplicatePath));
+
+  const uppercaseDigest = active();
+  uppercaseDigest.trust.trustedFiles[0].sha256 = 'B'.repeat(64);
+  assert.throws(() => assertLifecycleConsistent(uppercaseDigest));
+
+  const uppercaseCommit = active({ approvedCommit: 'A'.repeat(40) });
+  assert.throws(() => assertLifecycleConsistent(uppercaseCommit));
+
+  const wrongOwner = active();
+  wrongOwner.target.owner = 'someone-else';
+  assert.throws(() => assertLifecycleConsistent(wrongOwner));
+
+  const wrongContext = active();
+  wrongContext.statusContext = 'banksec/other';
+  assert.throws(() => assertLifecycleConsistent(wrongContext));
 });
 
 test('the validator fails closed on a schema keyword it does not implement', () => {

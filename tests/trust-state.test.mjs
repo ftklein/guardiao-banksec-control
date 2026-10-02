@@ -34,15 +34,42 @@ function withTempManifest(contents, fn) {
   }
 }
 
-test('CP11: verify-trust on the committed BOOTSTRAP_PENDING manifest exits 2', () => {
+// The committed manifest may legitimately be in either lifecycle state. What
+// must hold in both is the security property, not the lifecycle: the static
+// control plane never produces a trust pass.
+function committedState() {
+  const result = validateTargetFile(MANIFEST);
+  assert.equal(result.valid, true, 'the committed manifest must be structurally valid');
+  return result.manifest.trust.state;
+}
+
+test('CP11: verify-trust on the committed manifest reports the exit code of its lifecycle state', () => {
+  const state = committedState();
   const { code, output } = runVerify(MANIFEST);
-  assert.equal(code, EXIT_BOOTSTRAP_PENDING);
-  assert.equal(code, 2);
-  assert.match(output, /TRUST STATE: BOOTSTRAP_PENDING/);
-  assert.match(output, /TRUST RESULT: NOT TRUSTED/);
+
+  assert.equal(EXIT_TRUSTED, 0, 'exit 0 stays reserved for a future executor');
+  assert.equal(EXIT_BOOTSTRAP_PENDING, 2);
+  assert.equal(EXIT_EXECUTOR_NOT_INSTALLED, 3);
+  assert.notEqual(code, EXIT_TRUSTED);
+
+  if (state === 'BOOTSTRAP_PENDING') {
+    assert.equal(code, EXIT_BOOTSTRAP_PENDING);
+    assert.equal(code, 2);
+    assert.match(output, /TRUST STATE: BOOTSTRAP_PENDING/);
+    assert.match(output, /TRUST RESULT: NOT TRUSTED/);
+  } else if (state === 'ACTIVE') {
+    assert.equal(code, EXIT_EXECUTOR_NOT_INSTALLED);
+    assert.equal(code, 3);
+    assert.match(output, /TRUST STATE: ACTIVE/);
+    assert.match(output, /TRUST RESULT: UNDETERMINED/);
+    assert.match(output, /executor is NOT installed/);
+  } else {
+    assert.fail(`unexpected lifecycle state: ${state}`);
+  }
 });
 
-test('CP12: BOOTSTRAP_PENDING never reports a trust pass', () => {
+test('CP12: the committed manifest never reports a trust pass, in any lifecycle state', () => {
+  const state = committedState();
   const { code, output } = runVerify(MANIFEST);
   assert.notEqual(code, EXIT_TRUSTED);
   assert.doesNotMatch(output, /\bPASS\b/);
@@ -50,8 +77,8 @@ test('CP12: BOOTSTRAP_PENDING never reports a trust pass', () => {
     if (line.includes('TRUSTED')) assert.match(line, /NOT TRUSTED/);
   }
 
-  const result = validateTargetFile(MANIFEST);
-  assert.equal(describeTrust(result).code, EXIT_BOOTSTRAP_PENDING);
+  const expected = state === 'ACTIVE' ? EXIT_EXECUTOR_NOT_INSTALLED : EXIT_BOOTSTRAP_PENDING;
+  assert.equal(describeTrust(validateTargetFile(MANIFEST)).code, expected);
 });
 
 test('CP12b: a structurally valid ACTIVE manifest still does not report a trust pass', () => {
@@ -78,6 +105,41 @@ test('CP12b: a structurally valid ACTIVE manifest still does not report a trust 
     assert.notEqual(code, EXIT_TRUSTED);
     assert.match(output, /executor is NOT installed/);
     assert.doesNotMatch(output, /\bPASS\b/);
+  });
+});
+
+test('CP12c: a synthetic ACTIVE manifest validates, yet verify-trust is UNDETERMINED with exit 3', () => {
+  const synthetic = {
+    schemaVersion: 1,
+    target: { owner: 'ftklein', repository: 'GuardiaoSystem' },
+    statusContext: 'banksec/trusted-gate',
+    trust: {
+      state: 'ACTIVE',
+      approvedCommit: '1'.repeat(40),
+      trustedFiles: [
+        { path: 'security/banksec/security-cycle.sh', sha256: '2'.repeat(64) },
+        { path: 'security/banksec/ci-review.md', sha256: '3'.repeat(64) },
+        { path: 'security/banksec/baseline.md', sha256: '4'.repeat(64) },
+        { path: 'security/banksec/postgres-banksec-readonly.sql', sha256: '5'.repeat(64) }
+      ]
+    }
+  };
+  withTempManifest(synthetic, (path) => {
+    // Form is valid ...
+    const validation = validateTargetFile(path);
+    assert.deepEqual(validation.errors, []);
+    assert.equal(validation.valid, true);
+
+    // ... and that validity is not trust.
+    const { code, output } = runVerify(path);
+    assert.equal(code, EXIT_EXECUTOR_NOT_INSTALLED);
+    assert.equal(code, 3);
+    assert.notEqual(code, EXIT_TRUSTED);
+    assert.match(output, /TRUST STATE: ACTIVE/);
+    assert.match(output, /TRUST RESULT: UNDETERMINED/);
+    assert.match(output, /executor is NOT installed/);
+    assert.doesNotMatch(output, /\bPASS\b/);
+    assert.doesNotMatch(output, /TRUST RESULT: TRUSTED/);
   });
 });
 

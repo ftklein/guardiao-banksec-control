@@ -28,22 +28,47 @@ jobs:
       - name: Validate target manifest
         run: node src/validate-target.mjs targets/guardiao.json
 
-      - name: Trust gate must report BOOTSTRAP_PENDING (exit 2, never a pass)
+      - name: Trust gate must be state-aware and is never a trust pass
         run: |
           set +e
           output="$(node src/verify-trust.mjs targets/guardiao.json 2>&1)"
           code=$?
           set -e
           printf '%s\n' "$output"
-          if [ "$code" -ne 2 ]; then
-            echo "::error::expected exit 2 (BOOTSTRAP_PENDING), got $code"
+
+          require() {
+            case "$output" in
+              *"$1"*) ;;
+              *) echo "::error::trust gate output is missing: $1"; exit 1 ;;
+            esac
+          }
+
+          case "$code" in
+            0)
+              echo "::error::exit 0 is reserved for a future executor and must never be produced by the static control plane"
+              exit 1
+              ;;
+            2)
+              require "TRUST STATE: BOOTSTRAP_PENDING"
+              require "TRUST RESULT: NOT TRUSTED"
+              echo "Bootstrap gate held: exit 2 is the expected BOOTSTRAP_PENDING state and is NOT a trust pass."
+              ;;
+            3)
+              require "TRUST STATE: ACTIVE"
+              require "TRUST RESULT: UNDETERMINED"
+              require "executor is NOT installed"
+              echo "Active gate held: exit 3 means structurally active, runtime verification not performed. It is NOT a trust pass."
+              ;;
+            *)
+              echo "::error::unexpected trust gate exit code $code (only 2 or 3 are acceptable)"
+              exit 1
+              ;;
+          esac
+
+          if printf '%s\n' "$output" | grep -Eq '\bPASS\b|TRUST RESULT: TRUSTED'; then
+            echo "::error::trust gate output looks like a trust pass"
             exit 1
           fi
-          case "$output" in
-            *"TRUST RESULT: NOT TRUSTED"*) ;;
-            *) echo "::error::trust gate did not report NOT TRUSTED"; exit 1 ;;
-          esac
-          echo "Bootstrap gate held: exit 2 is the expected state and is NOT a trust pass."
 
       - name: Public safety check
         run: node src/public-safety-check.mjs
