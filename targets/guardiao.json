@@ -6,8 +6,25 @@
   },
   "statusContext": "banksec/trusted-gate",
   "trust": {
-    "state": "BOOTSTRAP_PENDING",
-    "approvedCommit": null,
-    "trustedFiles": []
+    "state": "ACTIVE",
+    "approvedCommit": "f081dbac51beea1eb4ffcb0831d2a987b714a29f",
+    "trustedFiles": [
+      {
+        "path": "security/banksec/security-cycle.sh",
+        "sha256": "27e396aadbd85c52601fce133649049a0d2a7c1efe516b8d1442749bd924db73"
+      },
+      {
+        "path": "security/banksec/ci-review.md",
+        "sha256": "066de1992a021df8ff5c6cacf129e49bd67d215813478e383b9d5b0d3a765834"
+      },
+      {
+        "path": "security/banksec/baseline.md",
+        "sha256": "8aa56cd2937078eb8078f82cd6a4b7ee5d71fdfcec7cde5e50cb5dc1e4ffeb40"
+      },
+      {
+        "path": "security/banksec/postgres-banksec-readonly.sql",
+        "sha256": "cf4310840b45e6dce9588df066065cb70173704383ec5368f29196c07a9dad04"
+      }
+    ]
   }
 }

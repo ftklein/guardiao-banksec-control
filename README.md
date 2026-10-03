@@ -2,7 +2,11 @@
 
 Independent trust control plane for Guardião BankSec.
 
-**Current trust state: `BOOTSTRAP_PENDING` — nothing is trusted, nothing is approved.**
+**Current trust state: `ACTIVE` — one GuardiaoSystem commit and the four-file
+BankSec trust surface are enrolled in the public manifest. Runtime trust
+verification has not been performed: the static control plane reports
+`UNDETERMINED` and does not grant a verified trust decision. `ACTIVE` is not
+`TRUST_VERIFIED`.**
 
 ## What this repository is
 
@@ -104,26 +108,40 @@ The reader has never been pointed at the real repository. Every test drives it
 through an injected transport with synthetic fixtures, no credential exists in
 this repository, and none is read from the environment.
 
-## Phase 1 scope
+## Trust lifecycle and current scope
 
-This is the bootstrap phase. On purpose:
+The manifest has two lifecycle states. Neither one is, by itself, a verified
+trust decision.
 
-- the initial and only state is `BOOTSTRAP_PENDING`;
-- **no commit of the target repository is approved**, and no file digest is
-  recorded;
-- `verify-trust.mjs` **never contacts the target repository**. The remote
-  verification executor is not installed yet and will be delivered in a later,
-  separately authorized phase;
-- `BOOTSTRAP_PENDING` exits with status `2`. That is the expected, designed
-  outcome — it is a refusal to grant trust, and CI asserts it as such. It is
-  never converted into a pass.
+| State | Manifest | `verify-trust.mjs` | Meaning |
+| --- | --- | --- | --- |
+| `BOOTSTRAP_PENDING` | `approvedCommit` is `null`, `trustedFiles` is empty | exit `2` — `NOT TRUSTED` | No commit is approved and no digest is recorded. **Never authorizes a merge.** |
+| `ACTIVE` | `approvedCommit` is set, and exactly four `trustedFiles` each carry a SHA-256 digest | exit `3` — `UNDETERMINED` (structure only) | A commit and the four-file trust surface are enrolled in the public manifest. The remote verification executor is **not installed**, so runtime verification has not been performed. |
+
+What holds in both states:
+
+- `verify-trust.mjs` **never contacts the target repository** in this layer. The
+  remote verification executor is not installed yet and will be delivered in a
+  later, separately authorized phase.
+- Exit `2` and exit `3` are both refusals to grant trust. CI asserts the exact
+  transcript of each state and never converts either one into a pass.
+- `EXIT_TRUSTED` (`0`) stays reserved. The static control plane does not produce
+  it.
+- `ACTIVE` does **not** mean Runtime Trust Verification has been performed: no
+  file digest has been compared against the target.
+- `ACTIVE` does **not** authorize merging any pull request in the target
+  repository, including the pull request that carries the enrolled commit
+  (PR #140).
+- The `banksec/trusted-gate` status is not published by this layer.
 
 ## Tools
 
 ```bash
 node --test                                      # unit tests
 node src/validate-target.mjs targets/guardiao.json   # schema validation (exit 0 = valid manifest)
-node src/verify-trust.mjs targets/guardiao.json      # trust state (exit 2 = BOOTSTRAP_PENDING)
+node src/verify-trust.mjs targets/guardiao.json      # trust state:
+                                                     #   exit 2 = BOOTSTRAP_PENDING / NOT TRUSTED
+                                                     #   exit 3 = ACTIVE / UNDETERMINED (structure only)
 node src/public-safety-check.mjs                     # refuse to publish private material
 ```
 
